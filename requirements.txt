@@ -9,3 +9,4 @@ google-auth
 google-auth-oauthlib 
 authlib 
 itsdangerous
+python-jose[cryptography]

@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from app.route import router
 from dotenv import load_dotenv
 import os
-from app.auth import auth_router
+from app.auth.auth import auth_router
 
 # Load environment variables
 load_dotenv()

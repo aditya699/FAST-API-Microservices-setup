@@ -5,10 +5,15 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 from app.database import get_db
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from . import models
+from .. import models
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
+from .jwt_handler import get_current_user
+from jose import JWTError, jwt
+
+from .jwt_handler import create_access_token,verify_access_token
 auth_router = APIRouter()
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -16,10 +21,22 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 
 @auth_router.get("/google/login")
-async def google_login():
-    # Google's OAuth2 server URL
-    auth_url = f"https://accounts.google.com/o/oauth2/v2/auth"
-    # Parameters for the request
+async def google_login(request: Request):
+    try:
+        # First check if user has valid token
+        token = request.cookies.get("access_token")
+        if token:
+            # Verify token
+            user_data = verify_access_token(token)
+            # If token is valid, redirect to home/dashboard
+            return RedirectResponse(url="/auth/test-auth")
+            
+    except (JWTError, HTTPException):
+        # If token invalid or expired, proceed with Google login
+        pass
+        
+    # If no token or invalid token, proceed with Google login
+    auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
     params = {
         "response_type": "code",
         "client_id": GOOGLE_CLIENT_ID,
@@ -27,11 +44,8 @@ async def google_login():
         "scope": "openid email profile",
     }
     
-    # Construct the authorization URL with parameters
     from urllib.parse import urlencode
     authorization_url = f"{auth_url}?{urlencode(params)}"
-    
-    # Redirect to Google's authorization endpoint
     return RedirectResponse(authorization_url)
 
 @auth_router.get("/callback")
@@ -66,7 +80,7 @@ async def auth_callback(code: str, db: Session = Depends(get_db)):
         # Step 3 - Check if user exists
         user = db.query(models.User).filter(models.User.google_id == idinfo['sub']).first()
         
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         if user:
             # Update existing user's last login
@@ -86,15 +100,65 @@ async def auth_callback(code: str, db: Session = Depends(get_db)):
         
         db.commit()
 
-        return {
-            "message": "Successfully authenticated",
-            "user_info": {
-                "user_id": str(user.user_id),
-                "email": user.email,
-                "username": user.username,
-                "last_login": user.last_login
-            }
+        token_data = {
+            "user_id": str(user.user_id),
+            "email": user.email
         }
+        access_token = create_access_token(token_data)
+        
+        # For now, just return the token
+         
+        # Create response object
+        response = JSONResponse(
+            content={
+                "message": "Successfully authenticated",
+                "user": {
+                    "email": user.email,
+                    "username": user.username
+                }
+            }
+        )
+        
+        # Set JWT in secure cookie
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,     # JavaScript can't access cookie
+            secure=True,       # Only sent over HTTPS
+            samesite="lax",    # CSRF protection
+            max_age=86400      # 24 hours in seconds
+        )
+        
+        return response
         
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+@auth_router.get("/test-auth")
+async def test_protected_route(current_user: dict = Depends(get_current_user)):
+    """
+    Protected route that requires valid JWT token
+    """
+    return {
+        "message": "You are authenticated!",
+        "your_details": {
+            "user_id": current_user["user_id"],
+            "email": current_user["email"]
+        }
+    }
+
+
+@auth_router.get("/logout")
+async def logout():
+    # Create response
+    response = JSONResponse(content={"message": "Successfully logged out"})
+    
+    # Delete the JWT cookie
+    response.delete_cookie(
+        key="access_token",
+        httponly=True,
+        secure=True,
+        samesite="lax"
+    )
+    
+    return response
