@@ -5,7 +5,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 from app.database import get_db
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session
 from .. import models
 from fastapi import HTTPException
@@ -25,6 +25,7 @@ async def google_login(request: Request):
     try:
         # First check if user has valid token
         token = request.cookies.get("access_token")
+        print(token)
         if token:
             # Verify token
             user_data = verify_access_token(token)
@@ -104,6 +105,22 @@ async def auth_callback(code: str, db: Session = Depends(get_db)):
             "user_id": str(user.user_id),
             "email": user.email
         }
+
+        session_duration = timedelta(days=1)  # Sessions last 24 hours
+        new_session = models.Session(
+            user_id=user.user_id,
+            created_at=current_time,
+            expires_at=current_time + session_duration
+        )
+        db.add(new_session)
+        db.commit()
+
+        token_data = {
+            "user_id": str(user.user_id),
+            "email": user.email,
+            "session_id": str(new_session.session_id)  # Add session_id to token
+        }
+
         access_token = create_access_token(token_data)
         
         # For now, just return the token
